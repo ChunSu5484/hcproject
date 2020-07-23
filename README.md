@@ -1,2 +1,2 @@
-# kaggle-projects
-kaggle home credit 
+# kaggle-homecredit
+kaggle home credit
