@@ -28,6 +28,14 @@ def main(debug=False):
     print('pos df shape:', pos_df.shape)
     df = pd.merge(df, pos_df, on='SK_ID_CURR', how='left')
 
+    ins_df = preprocess_installment_payments(path, num_rows=num_rows)
+    print('installment df shape:', ins_df.shape)
+    df = pd.merge(df, ins_df, on='SK_ID_CURR', how='left')
+
+    ccb_df = preprocess_credit_card(path, num_rows=num_rows)
+    print('ccb df shape:', ccb_df.shape)
+    df = pd.merge(df, ccb_df, on='SK_ID_CURR', how='left')
+
     print('The shape of total DataFrame:', df.shape)
 
     # kfold_lgbm(df)
@@ -63,7 +71,7 @@ def kfold_lgbm(df):
         # 모델 생성
         clf = LGBMClassifier(
             objective='binary',
-            n_estimators=10000,
+            n_estimators=5000,
             n_jobs=-1,
             silent=-1,
             verbose=-1,
@@ -202,7 +210,6 @@ def preprocess_bureau(path, num_rows=None):
 
     # bur_df에서 새롭게 생성된 변수들
     for cat in bur_new_columns: cat_aggregations[cat] = ['mean', 'sum']
-
 
     # 수치형 변수들에 대한 agg 기준 설정
     # category형 변수들의 컬럼이름을 리스트로 저장
@@ -385,12 +392,79 @@ def preprocess_pos_cash(path, num_rows=None):
 
     return pos_agg
 
+
 def preprocess_installment_payments(path, num_rows=None):
-    pass
+    ins = pd.read_csv(path + 'installments_payments.csv', nrows=num_rows)
+
+    # Add feature
+    ins['DAYS_INADVANCE'] = (ins['DAYS_INSTALMENT'] - ins['DAYS_ENTRY_PAYMENT'])
+    ins['AMT_GAP'] = (ins['AMT_INSTALMENT'] - ins['AMT_PAYMENT'])
+
+    # agregation
+    aggregation = {'NUM_INSTALMENT_NUMBER': ['max', 'mean'], 'DAYS_INADVANCE': ['mean'],
+                   'NUM_INSTALMENT_VERSION': ['max', 'min'],
+                   'AMT_INSTALMENT': ['mean'], 'AMT_PAYMENT': ['mean'], 'AMT_GAP': ['max', 'min', 'mean']}
+
+    ins = ins.groupby(['SK_ID_PREV', 'SK_ID_CURR']).agg(aggregation)
+
+    # 컬럼 구분 및 이름 변경
+    ins.columns = pd.Index([e[0] + "_" + e[1].upper() for e in ins.columns.tolist()])
+
+    # SK_ID_CURR를 기준으로 aggregation
+    ins = ins.groupby('SK_ID_CURR').agg(['mean'])
+    # 컬럼 구분 및 이름 변경
+    ins.columns = pd.Index(['INS_' + e[0] + "_" + e[1].upper() for e in ins.columns.tolist()])
+
+    return ins
+
 
 def preprocess_credit_card(path, num_rows=None):
-    pass
+    ccb = pd.read_csv(path + 'credit_card_balance.csv', nrows=num_rows)
 
+    # Add features
+    ccb['AMT_BALANCE_RATIO'] = ccb['AMT_BALANCE'] / ccb['AMT_CREDIT_LIMIT_ACTUAL']
+
+    ccb['ONCE_DRAWINGS_ATM_CURRENT'] = ccb['AMT_DRAWINGS_ATM_CURRENT'] / ccb['CNT_DRAWINGS_ATM_CURRENT']
+    ccb['ONCE_DRAWINGS_CURRENT'] = ccb['AMT_DRAWINGS_CURRENT'] / ccb['CNT_DRAWINGS_CURRENT']
+    ccb['ONCE_DRAWINGS_OTHER_CURRENT'] = ccb['AMT_DRAWINGS_OTHER_CURRENT'] / ccb['CNT_DRAWINGS_OTHER_CURRENT']
+    ccb['ONCE_DRAWINGS_POS_CURRENT'] = ccb['AMT_DRAWINGS_POS_CURRENT'] / ccb['CNT_DRAWINGS_POS_CURRENT']
+
+    ccb['AMT_DRAWINGS_ATM_CURRENT_RATIO'] = ccb['AMT_DRAWINGS_ATM_CURRENT'] / ccb['AMT_DRAWINGS_CURRENT']
+    ccb['AMT_DRAWINGS_OTHER_CURRENT_RATIO'] = ccb['AMT_DRAWINGS_OTHER_CURRENT'] / ccb['AMT_DRAWINGS_CURRENT']
+    ccb['AMT_DRAWINGS_POS_CURRENT_RATIO'] = ccb['AMT_DRAWINGS_POS_CURRENT'] / ccb['AMT_DRAWINGS_CURRENT']
+
+    ccb['CNT_DRAWINGS_ATM_CURRENT_RATIO'] = ccb['CNT_DRAWINGS_ATM_CURRENT'] / ccb['CNT_DRAWINGS_CURRENT']
+    ccb['CNT_DRAWINGS_OTHER_CURRENT_RATIO'] = ccb['CNT_DRAWINGS_OTHER_CURRENT'] / ccb['CNT_DRAWINGS_CURRENT']
+    ccb['CNT_DRAWINGS_POS_CURRENT_RATIO'] = ccb['CNT_DRAWINGS_POS_CURRENT'] / ccb['CNT_DRAWINGS_CURRENT']
+
+    ccb['AMT_RECIVABLE_DIFF'] = ccb['AMT_RECIVABLE'] - ccb['AMT_TOTAL_RECEIVABLE']
+    ccb['SK_DPD_LOW_LOAN'] = ccb['SK_DPD'] - ccb['SK_DPD_DEF']
+
+    # category encoding
+    ccb, ccb_new_columns = cat_encoding(ccb)
+
+    # aggregation
+    ccb_aggregations = {}
+
+    for col in ccb_new_columns:
+        ccb_aggregations[col] = ['mean']
+
+    ccb_columns = [c for c in ccb.columns if c not in ccb_new_columns]
+    ccb_columns.remove('SK_ID_PREV')
+    ccb_columns.remove('SK_ID_CURR')
+
+    for col in ccb_columns:
+        ccb_aggregations[col] = ['min', 'max', 'mean', 'median', 'sum', 'size']
+
+    ccb = ccb.groupby(['SK_ID_PREV', 'SK_ID_CURR']).agg(ccb_aggregations)
+    ccb.columns = pd.Index([e[0] + "_" + e[1].upper() for e in ccb.columns.tolist()])
+
+    ccb = ccb.groupby(['SK_ID_CURR']).agg('mean')
+
+    # modified columns name
+    ccb.columns = pd.Index(['CCB_' + e[0] + "_" + e[1].upper() for e in ccb.columns.tolist()])
+
+    return ccb
 
 path = 'data/'
 
