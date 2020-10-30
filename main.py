@@ -8,6 +8,7 @@ from lightgbm import LGBMClassifier
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import KFold, StratifiedKFold
 from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import train_test_split
 
 
 def main(debug=False):
@@ -37,6 +38,11 @@ def main(debug=False):
     df = pd.merge(df, ccb_df, on='SK_ID_CURR', how='left')
 
     print('The shape of total DataFrame:', df.shape)
+
+    # feature selection
+    df = delete_similar_features(df)
+    df = delete_zero_fi_features(df)
+    print('The shape of total DataFrame after feature_selection:', df.shape)
 
     # kfold_lgbm(df)
 
@@ -465,6 +471,73 @@ def preprocess_credit_card(path, num_rows=None):
     ccb.columns = pd.Index(['CCB_' + e[0] + "_" + e[1].upper() for e in ccb.columns.tolist()])
 
     return ccb
+
+
+# functions for feature selection
+def delete_similar_features(df):
+    # 임계치를 0.9로 설정
+    threshold = 0.9
+
+    corr_matrix = df.corr().abs()
+    upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(np.bool))
+    upper.head()
+
+    # 임계값(0.9)를 초과하는 상관관계 값을 포함하는 변수에 대한 리스트를 생성
+    to_drop = [column for column in upper.columns if any(upper[column] > threshold)]
+
+    # 제거할 변수의 개수 확인
+    print('There are %d columns to remove.' % (len(to_drop)))
+
+    df = df.drop(columns=to_drop)
+    return df
+
+
+def delete_zero_fi_features(df):
+    train = df[df['TARGET'].notnull()]
+    test = df[df['TARGET'].isnull()]
+
+    train_labels = train['TARGET']
+
+    train = train.drop(columns=['TARGET'])
+    test = test.drop(columns=['TARGET'])
+
+    # LGBMClassifier 모델에 넣을 수 있게 데이터프레임의 컬럼명을 재설정
+    train.columns = ["".join(c if c.isalnum() else "_" for c in str(x)) for x in train.columns]
+    test.columns = ["".join(c if c.isalnum() else "_" for c in str(x)) for x in test.columns]
+
+    # 모델에서 추출할 feature importance를 저장할 변수 생성
+    feature_importances = np.zeros(train.shape[1])
+
+    # 모델 생성
+    model = LGBMClassifier(objective='binary', n_estimators=10000)
+
+    for i in range(2):
+        train_features, valid_features, train_y, valid_y = train_test_split(train, train_labels, test_size=0.25,
+                                                                            random_state=i)
+        model.fit(train_features, train_y, early_stopping_rounds=100, eval_set=[(valid_features, valid_y)],
+                  eval_metric='auc', verbose=100)
+        feature_importances += model.feature_importances_
+
+    feature_importances = feature_importances / 2
+
+    feature_importances = pd.DataFrame({'feature': list(train.columns), 'importance': feature_importances}).sort_values(
+        'importance', ascending=False)
+
+    # feature importance가 0인 feature의 컬럼 이름을 저장
+    zero_features = list(feature_importances[feature_importances['importance'] == 0.0]['feature'])
+
+    # feature importance가 0인 피쳐의 수
+    print('There are %d features with 0.0 importance' % len(zero_features))
+
+    train = train.drop(columns=zero_features)
+    test = test.drop(columns=zero_features)
+
+    train['TARGET'] = train_labels
+
+    df = train.append(test)
+
+    return df
+
 
 path = 'data/'
 
